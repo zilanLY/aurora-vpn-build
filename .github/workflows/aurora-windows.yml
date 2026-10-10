@@ -1,0 +1,47 @@
+name: Aurora VPN (Windows)
+
+# 构建 Windows 桌面版（单文件 exe）。
+#  - 386  : 历史兼容版，走 Windows 7 SP1+，必须用 Go 1.20（1.21+ 已放弃 Win7）
+#  - amd64: Windows 10/11 适配版，使用较新 Go，清单启用 PerMonitorV2 高 DPI 等
+on:
+  push:
+    paths:
+      - 'aurora-windows/**'
+      - '.github/workflows/aurora-windows.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: '386'
+            go: '1.20.14'
+          - arch: 'amd64'
+            go: '1.25.x'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go ${{ matrix.go }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: aurora-windows/go.sum
+
+      - name: Unit tests
+        working-directory: aurora-windows
+        run: go test ./...
+
+      - name: Build (${{ matrix.arch }})
+        working-directory: aurora-windows
+        run: |
+          chmod +x build.sh
+          ./build.sh ${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jiguang-vpn-windows-${{ matrix.arch }}
+          path: aurora-windows/dist/*.zip

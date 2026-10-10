@@ -1,0 +1,58 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.jiguang.vpn'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.jiguang.vpn'
+        minSdk 26
+        targetSdk 34
+        versionCode 18
+        versionName '1.0.18'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // CI首版用debug签名兜底，保证GitHub Action无需密钥即可出包。
+            // 正式发布时在Action Secrets配置KEYSTORE后切换为正式签名。
+            signingConfig signingConfigs.debug
+        }
+        debug {
+            applicationIdSuffix '.debug'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    implementation project(':core')
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.activity:activity-ktx:1.9.0'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.3'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+
+    // sing-box 移动内核（由 CI 构建后放入 app/libs/libbox.aar）
+    def libboxAar = file('libs/libbox.aar')
+    if (libboxAar.exists()) {
+        implementation files(libboxAar)
+    } else {
+        // 本地无 aar 时退化为 API stub，仅保证可编译；不得用于发布
+        logger.lifecycle("libbox.aar 不存在，使用本地 stub（仅供编译）")
+        implementation files('libs-stub/libbox-stub.jar')
+    }
+}

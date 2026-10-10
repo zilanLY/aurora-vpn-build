@@ -1,0 +1,13 @@
+name: Aurora VPN APK (deprecated)
+
+# 已被 "Aurora VPN (Android)" 取代：现在 APK 需要先构建 sing-box libbox 内核。
+# 此文件仅保留以兼容旧引用，只在手动触发时提示，不再自动运行。
+on:
+  workflow_dispatch:
+
+jobs:
+  notice:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deprecated
+        run: echo "请使用 'Aurora VPN (Android)' 工作流构建 APK（含 libbox 内核）。"
