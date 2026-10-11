@@ -362,12 +362,12 @@ class JiguangVpnService : VpnService(), PlatformInterface, CommandServerHandler 
                     java.net.InetSocketAddress(java.net.InetAddress.getByName(destinationAddress), destinationPort)
                 )
                 if (uid > 0) {
-                    // gomobile 绑定:Go 方法名原样导出(SetAndroidPackageNames),
-                    // 字段 userId 经 JavaBean 生成 setUserId/getUserId
+                    // gomobile 绑定:字段生成 JavaBean setUserId/getUserId,
+                    // SetAndroidPackageNames 导出为 setAndroidPackageNames(已从真实 aar dex 验证)
                     owner.setUserId(uid)
                     val packages = packageManager.getPackagesForUid(uid)
                     if (!packages.isNullOrEmpty()) {
-                        owner.SetAndroidPackageNames(StringArray(packages.iterator()))
+                        owner.setAndroidPackageNames(StringArray(packages.iterator()))
                     }
                 }
             } catch (_: Throwable) {
