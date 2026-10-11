@@ -81,6 +81,11 @@ class JiguangVpnService : VpnService(), PlatformInterface, CommandServerHandler 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val operationMutex = Mutex()
 
+    /** 连接归属查询缓存:相同五元组 60s 内复用,避免 DNS 风暴下高频回调拖慢内核。 */
+    private val ownerCache = object : LinkedHashMap<String, ConnectionOwner>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ConnectionOwner>?): Boolean = size > 256
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> stopVpn()
@@ -339,7 +344,36 @@ class JiguangVpnService : VpnService(), PlatformInterface, CommandServerHandler 
         sourcePort: Int,
         destinationAddress: String?,
         destinationPort: Int,
-    ): ConnectionOwner? = null
+    ): ConnectionOwner? {
+        // 绝不能返回 null:sing-box v1.14 libbox wrapper(service.go:226)拿到 nil
+        // 会直接解引用导致 Go panic(SIGSEGV→SIGABRT),即连接后首个 DNS 查询必崩。
+        // 查不到时返回空对象而非 null。
+        val key = "$ipProtocol|$sourceAddress|$sourcePort|$destinationAddress|$destinationPort"
+        ownerCache[key]?.let { return it }
+        val owner = ConnectionOwner()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                // getConnectionOwnerUid 需要应用当前持有 VPN 接口(本服务已建立 tun),
+                // 返回发起连接的 uid;查不到(连接已关闭/竞态)返回 -1
+                val uid = cm.getConnectionOwnerUid(
+                    ipProtocol,
+                    java.net.InetSocketAddress(java.net.InetAddress.getByName(sourceAddress), sourcePort),
+                    java.net.InetSocketAddress(java.net.InetAddress.getByName(destinationAddress), destinationPort)
+                )
+                if (uid > 0) {
+                    owner.userId = uid
+                    val packages = packageManager.getPackagesForUid(uid)
+                    if (!packages.isNullOrEmpty()) {
+                        owner.androidPackageNames = StringArray(packages.iterator())
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        ownerCache.put(key, owner)
+        return owner
+    }
 
     override fun openShellSession(
         user: PlatformUser?,

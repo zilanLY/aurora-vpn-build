@@ -114,6 +114,44 @@ object LatencyEngine {
         }
     }
 
+    /**
+     * 增量测速:只补齐没有结果的节点,已有结果直接复用(进线路页时调用,秒出可用列表)。
+     * 与 8h 全量节流(ensureFresh)互不干扰。
+     */
+    fun ensureIncremental() {
+        val ctx = appContext ?: return
+        if (running || rechecking) return
+        if (NodeStore.links.isEmpty()) return
+        val missing = NodeStore.tags.filter { !values.containsKey(it) }
+        if (missing.isEmpty()) return
+        running = true
+        notifyChanged()
+        scope.launch {
+            try {
+                val uriByTag = HashMap<String, String>(missing.size)
+                NodeStore.tags.forEachIndexed { i, tag ->
+                    if (tag in missing) NodeStore.links.getOrNull(i)?.let { uriByTag[tag] = it.uri }
+                }
+                var done = 0
+                val onResult: (String, Int) -> Unit = { tag, ms ->
+                    values[tag] = ms
+                    done++
+                    if (done % 5 == 0) {
+                        persist(ctx)
+                        notifyChanged()
+                    }
+                }
+                source = "tcp"
+                LatencyTester.tcpPing(uriByTag, onResult)
+            } catch (_: Throwable) {
+            } finally {
+                persist(ctx)
+                running = false
+                notifyChanged()
+            }
+        }
+    }
+
     private fun isFresh(ctx: Context): Boolean {
         val snap = LatencyCache.load(ctx) ?: return false
         if (snap.values.isEmpty()) return false

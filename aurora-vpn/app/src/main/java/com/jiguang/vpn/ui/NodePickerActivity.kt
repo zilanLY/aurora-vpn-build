@@ -76,6 +76,8 @@ class NodePickerActivity : AppCompatActivity() {
         }
         NodeStoreBridge.addListener(storeListener)
         LatencyEngine.addListener(latencyListener)
+        // 进页自动增量补测:只测没结果的节点,已有结果立即展示
+        LatencyEngine.ensureIncremental()
         resolveRegions()
     }
 

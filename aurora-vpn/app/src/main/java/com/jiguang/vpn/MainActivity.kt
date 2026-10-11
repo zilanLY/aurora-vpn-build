@@ -25,6 +25,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.jiguang.vpn.JiGuangApp
 import com.jiguang.vpn.core.SingBoxConfig
+import com.jiguang.vpn.data.ClashApi
 import com.jiguang.vpn.data.LatencyEngine
 import com.jiguang.vpn.data.NodeSelector
 import com.jiguang.vpn.data.NodeStore
@@ -41,15 +42,19 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var statusView: TextView
     private lateinit var durationView: TextView
+    private lateinit var exitView: TextView
     private lateinit var nodeCard: LinearLayout
     private lateinit var nodeRegion: TextView
     private lateinit var nodeName: TextView
     private lateinit var nodeExtra: TextView
     private lateinit var nodeLatency: TextView
+    private lateinit var trafficView: TextView
     private lateinit var progress: ProgressBar
     private lateinit var connectBtn: Button
+    private lateinit var retryView: TextView
     private lateinit var refreshBtn: Button
-    private lateinit var sourceView: TextView
+    private lateinit var menuBtn: Button
+    private lateinit var menuPanel: LinearLayout
     private lateinit var crashView: TextView
     private lateinit var modeRuleBtn: Button
     private lateinit var modeGlobalBtn: Button
@@ -63,12 +68,38 @@ class MainActivity : AppCompatActivity() {
     /** 本次连接会话是否已做过内核可用性检测(断开时重置)。 */
     private var availabilityChecked = false
 
+    /** 连接成功后经代理确认的出口信息("ip|cc"),失败/断开置空。 */
+    private var exitInfo: String? = null
+
+    /** 主页流量/连接数刷新 ticker。 */
     private val handler = Handler(Looper.getMainLooper())
+    private var exitJob: kotlinx.coroutines.Job? = null
     private val ticker = object : Runnable {
         override fun run() {
             refreshConnectState()
+            refreshTraffic()
             handler.postDelayed(this, 1000)
         }
+    }
+
+    /** 已连接时每秒拉一次内核流量/连接数(本地 127.0.0.1,开销可忽略);未连接时跳过。 */
+    private fun refreshTraffic() {
+        if (!JiguangVpnService.running) return
+        lifecycleScope.launch {
+            val t = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ClashApi.connections() }
+            if (isFinishing || isDestroyed || !JiguangVpnService.running) return@launch
+            if (t != null) {
+                val (count, traffic) = t
+                trafficView.text = "活动连接 $count · 累计 ↓${formatBytes(traffic.totalDown)} ↑${formatBytes(traffic.totalUp)}"
+            }
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1L shl 30 -> String.format(Locale.ROOT, "%.2f GB", bytes / 1073741824.0)
+        bytes >= 1L shl 20 -> String.format(Locale.ROOT, "%.1f MB", bytes / 1048576.0)
+        bytes >= 1L shl 10 -> String.format(Locale.ROOT, "%.1f KB", bytes / 1024.0)
+        else -> "$bytes B"
     }
 
     private val vpnPermission =
@@ -97,6 +128,8 @@ class MainActivity : AppCompatActivity() {
         connectBtn.setOnClickListener { toggleConnect() }
         refreshBtn.setOnClickListener { refresh(showToastOnFail = true) }
         nodeCard.setOnClickListener { openNodePicker() }
+        retryView.setOnClickListener { retryWithNextNode() }
+        menuBtn.setOnClickListener { toggleMenu() }
         setMode(prefs().getString(KEY_MODE, "rule") ?: "rule")
         handler.post(ticker)
 
@@ -118,6 +151,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacks(ticker)
+        exitJob?.cancel()
         super.onDestroy()
     }
 
@@ -160,7 +194,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(16), dp(18), dp(14))
         }
 
-        // 顶部:品牌 + 默认专线
+        // 顶部:品牌 + 菜单
         val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val logo = TextView(this).apply {
             text = "极"
@@ -183,14 +217,38 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(Theme.TEXT)
                 typeface = Typeface.DEFAULT_BOLD
             })
-            sourceView = TextView(this@MainActivity).apply {
-                text = "默认专线 · ${SubscriptionRepository.DEFAULT_SOURCE.label}"
-                textSize = 11f
-                setTextColor(Theme.PRIMARY)
-                setPadding(0, dp(2), 0, 0)
-            }
-            addView(sourceView)
         })
+        menuBtn = Button(this).apply {
+            text = "⚙"
+            textSize = 16f
+            setTextColor(Theme.TEXT)
+            background = Theme.ripple(Theme.rounded(Theme.CARD2, 14, density))
+            stateListAnimator = null
+            minHeight = 0; minimumHeight = 0; minWidth = 0; minimumWidth = 0
+            setPadding(dp(14), dp(6), dp(14), dp(8))
+        }
+        header.addView(menuBtn)
+
+        // 下拉菜单面板(默认隐藏):模式切换 + 刷新订阅
+        menuPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Theme.rounded(Theme.CARD, 16, density)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            visibility = View.GONE
+        }
+        val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        modeRuleBtn = modeChip("智能分流")
+        modeGlobalBtn = modeChip("全局模式")
+        modeRuleBtn.setOnClickListener { setMode("rule") }
+        modeGlobalBtn.setOnClickListener { setMode("global") }
+        chips.addView(modeRuleBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        chips.addView(modeGlobalBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) })
+        menuPanel.addView(chips)
+        refreshBtn = pillButton("刷新订阅(每 8 小时自动)")
+        refreshBtn.layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(10) }
+        menuPanel.addView(refreshBtn)
 
         // Hero 卡片(渐变)
         val hero = LinearLayout(this).apply {
@@ -223,9 +281,16 @@ class MainActivity : AppCompatActivity() {
             textSize = 12f
             setTextColor(Color.argb(0xCC, 0xC8, 0xD2, 0xEA))
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dp(16))
         }
         hero.addView(durationView)
+        exitView = TextView(this).apply {
+            text = " "
+            textSize = 11f
+            setTextColor(Color.argb(0xAA, 0xC8, 0xD2, 0xEA))
+            gravity = Gravity.CENTER
+            setPadding(0, dp(2), 0, dp(10))
+        }
+        hero.addView(exitView)
 
         val connectFrame = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(172), dp(172)).apply { gravity = Gravity.CENTER_HORIZONTAL }
@@ -309,37 +374,38 @@ class MainActivity : AppCompatActivity() {
             typeface = Typeface.DEFAULT_BOLD
         })
 
-        // 模式切换
-        val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        modeRuleBtn = modeChip("智能分流")
-        modeGlobalBtn = modeChip("全局模式")
-        modeRuleBtn.setOnClickListener { setMode("rule") }
-        modeGlobalBtn.setOnClickListener { setMode("global") }
-        chips.addView(modeRuleBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        chips.addView(modeGlobalBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) })
+        // 实时状态行:↓速度 ↑速度 · 连接数(仅连接时可见)
+        trafficView = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Theme.SUBTEXT)
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
 
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
             visibility = View.GONE
         }
 
-        refreshBtn = pillButton("刷新订阅")
-        refreshBtn.layoutParams =
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                .apply { topMargin = dp(10) }
+        // 失败重试提示(默认隐藏):连接失败/超时时出现,一键换节点重连
+        retryView = TextView(this).apply {
+            text = "↻ 换一个节点重试"
+            textSize = 13f
+            setTextColor(Theme.PRIMARY)
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = Theme.ripple(Theme.rounded(Theme.CARD2, 14, density))
+            setPadding(0, dp(12), 0, dp(12))
+            visibility = View.GONE
+        }
 
         root.addView(header)
+        root.addView(menuPanel, topMargin(dp(10)))
         root.addView(hero, topMargin(dp(14)))
         root.addView(nodeCard, topMargin(dp(12)))
-        root.addView(chips, topMargin(dp(12)))
-        root.addView(refreshBtn)
+        root.addView(trafficView, topMargin(dp(8)))
+        root.addView(retryView, topMargin(dp(10)))
         root.addView(progress, topMargin(dp(6)))
-        root.addView(TextView(this).apply {
-            text = "连接时由内核自动匹配最快线路;「换线」可查看各地区节点并测速。"
-            textSize = 11f
-            setTextColor(Theme.SUBTEXT)
-            setPadding(0, dp(10), 0, 0)
-        }, topMargin(dp(4)))
         crashView = TextView(this).apply {
             textSize = 10f
             setTextColor(Theme.SUBTEXT)
@@ -412,17 +478,34 @@ class MainActivity : AppCompatActivity() {
         if (JiguangVpnService.running) {
             startService(Intent(this, JiguangVpnService::class.java).setAction(JiguangVpnService.ACTION_STOP))
             availabilityChecked = false
+            exitInfo = null
+            retryView.visibility = View.GONE
             note("正在断开…")
             return
         }
         if (NodeStore.isEmpty) {
-            toast("请先刷新订阅")
+            toast("正在获取线路,请稍候")
+            if (!isLoading) refresh(showToastOnFail = true)
             return
         }
         JiguangVpnService.lastError = null
+        retryView.visibility = View.GONE
         connectRequestedAt = 0L
         val prep = VpnService.prepare(this)
         if (prep != null) vpnPermission.launch(prep) else startVpn()
+    }
+
+    /** 连接失败/超时后的换节点重试:清除手动选择,由测速结果选下一个可用候选重连。 */
+    private fun retryWithNextNode() {
+        retryView.visibility = View.GONE
+        JiguangVpnService.lastError = null
+        if (NodeStore.isEmpty) {
+            toast("正在获取线路,请稍候")
+            return
+        }
+        connectRequestedAt = 0L
+        note("正在换线重连…")
+        startVpn()
     }
 
     private fun startVpn() {
@@ -472,20 +555,39 @@ class MainActivity : AppCompatActivity() {
             statusView.text = "已连接"
             statusView.setTextColor(Theme.GREEN)
             durationView.text = "已连接 ${formatDuration(System.currentTimeMillis() - JiguangVpnService.connectedAt)}"
+            trafficView.visibility = View.VISIBLE
+            retryView.visibility = View.GONE
             // 连接成功后用内核 Clash API 做一轮真实可用性复测(每次会话一次,
             // 不受节流限制,结果覆盖本地探测值——内核实测才是真实可用性)
             if (!availabilityChecked && !LatencyEngine.isRunning()) {
                 availabilityChecked = true
-                LatencyEngine.recheckViaClash()
+                exitInfo = null
+                exitView.text = "正在确认出口…"
+                exitJob?.cancel()
+                exitJob = lifecycleScope.launch {
+                    LatencyEngine.recheckViaClash()
+                    val ip = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { ClashApi.exitIp() }
+                    if (isFinishing || isDestroyed) return@launch
+                    exitInfo = ip
+                    if (ip != null) {
+                        val parts = ip.split("|")
+                        exitView.text = "出口 ${parts[0]} · ${RegionResolver.countryName(parts.getOrElse(1) { "" })}"
+                    } else {
+                        exitView.text = "出口确认失败(网络可能未走代理)"
+                    }
+                }
             }
             return
         }
+        trafficView.visibility = View.GONE
+        exitView.text = " "
         val err = JiguangVpnService.lastError
         if (err != null) {
             statusNote = "连接失败"
             statusView.text = "连接失败"
             statusView.setTextColor(Theme.RED)
             durationView.text = err
+            retryView.visibility = View.VISIBLE
             return
         }
         if (statusNote?.startsWith("正在连接") == true &&
@@ -496,11 +598,16 @@ class MainActivity : AppCompatActivity() {
             statusView.text = "连接超时"
             statusView.setTextColor(Theme.RED)
             durationView.text = "请检查线路或网络后重试"
+            retryView.visibility = View.VISIBLE
             return
         }
         statusView.text = statusNote ?: "未连接"
         statusView.setTextColor(Color.WHITE)
         durationView.text = " "
+    }
+
+    private fun toggleMenu() {
+        menuPanel.visibility = if (menuPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
     }
 
     private fun formatDuration(ms: Long): String {
